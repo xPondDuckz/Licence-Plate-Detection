@@ -1,0 +1,6 @@
+path: ../dataset  # path หลักของโฟลเดอร์ข้อมูล
+train: train/images
+val: val/images
+
+nc: 1              # จำนวน class (ในที่นี้คือ 1: ป้ายทะเบียน)
+names: ['license_plate']
