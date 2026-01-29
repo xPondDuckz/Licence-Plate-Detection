@@ -1,0 +1,10 @@
+cat << EOF > requirements.txt
+pytz
+opencv-python
+Pillow
+EOF
+
+
+#How to install the packages listed in requirements.txt?
+#pip install -r requirements.txt
+#-r =  "requirement file" name this for short
