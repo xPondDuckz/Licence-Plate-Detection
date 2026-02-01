@@ -1,7 +1,7 @@
 task: detect
 mode: train
-model: yolo11n.pt
-data: C:\Users\Admin\Downloads\LPR plate.v1i.yolov8\data.yaml
+model: yolo26n.pt
+data: C:\Users\Admin\Downloads\LPR plate.v1i.yolo26\data.yaml
 epochs: 100
 time: null
 patience: 100
@@ -11,10 +11,10 @@ save: true
 save_period: -1
 cache: false
 device: cpu
-workers: 4
+workers: 0
 project: null
-name: yolo11_lpr_gpu
-exist_ok: false
+name: yolov26_lpr_amd
+exist_ok: true
 pretrained: true
 optimizer: auto
 verbose: true
@@ -25,7 +25,7 @@ rect: false
 cos_lr: false
 close_mosaic: 10
 resume: false
-amp: true
+amp: false
 fraction: 1.0
 profile: false
 freeze: null
@@ -106,4 +106,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: E:\Project\CE\runs\detect\yolo11_lpr_gpu
+save_dir: E:\Project\CE\runs\detect\yolov26_lpr_amd

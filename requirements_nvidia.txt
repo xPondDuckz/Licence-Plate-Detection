@@ -1,0 +1,11 @@
+ultralytics
+requests
+ncnn
+opencv-python
+pandas
+requests
+
+
+#คำสั่งสำหรับติดตั้งแพ็กเกจที่ระบุใน requirements_nvidia.txt
+#pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126 #สำหรับ CUDA 12.6 (การ์ดจอ NVIDIA RTX 3000 series ขึ้นไป)
+#pip install -r requirements_nvidia.txt
