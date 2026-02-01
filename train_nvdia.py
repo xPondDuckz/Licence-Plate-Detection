@@ -30,13 +30,19 @@ def send_discord_embed(title, description, color, fields=None):
 
 # --- [Callbacks สำหรับติดตามการเทรน] ---
 def on_train_epoch_end(trainer):
-    # ส่งแจ้งเตือนทุกๆ 1 Epoch (ปรับเลขได้)
+    # ส่งแจ้งเตือนทุกๆ 1 Epoch
     epoch = trainer.epoch + 1
     if epoch % 1 == 0:
+        # Check if fitness is available (it might be None in early epochs)
+        if trainer.fitness is not None:
+            fitness_str = f"`{trainer.fitness:.4f}`"
+        else:
+            fitness_str = "`Calculating...`"  # Use text if value is missing
+
         fields = [
             {"name": "📦 Model", "value": "`YOLOv26n`", "inline": True},
             {"name": "🔄 Epoch", "value": f"`{epoch}/{trainer.args.epochs}`", "inline": True},
-            {"name": "📈 Fitness (mAP)", "value": f"`{trainer.fitness:.4f}`", "inline": False}
+            {"name": "📈 Fitness (mAP)", "value": fitness_str, "inline": False}
         ]
         send_discord_embed("📊 Training Progress Update", "กำลังประมวลผลข้อมูลป้ายทะเบียน...", COLOR_UPDATE, fields)
 
@@ -56,7 +62,7 @@ if __name__ == '__main__':
 
     # 2. โหลดโมเดล YOLOv26 Nano
     print("--- Loading YOLOv26n ---")
-    model = YOLO('yolov26n.pt') # <--- ใช้ v26n เป็นหลักตามต้องการ
+    model = YOLO('yolo26n.pt') # <--- ใช้ v26n เป็นหลักตามต้องการ
 
     # 3. ลงทะเบียน Callbacks
     model.add_callback("on_train_epoch_end", on_train_epoch_end)
@@ -65,7 +71,7 @@ if __name__ == '__main__':
     # 4. เริ่มการเทรน (Full Power NVIDIA GPU)
     print("--- Training Started ---")
     results = model.train(
-        data=r'C:\Users\Admin\Downloads\LPR plate.v1i.yolov8\data.yaml', 
+        data=r'G:\Project\Data\pengsiri\data.yaml', 
         epochs=100,
         imgsz=640,
         batch=16,
