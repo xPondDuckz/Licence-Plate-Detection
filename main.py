@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
 import threading
 from ultralytics import YOLO
@@ -13,139 +14,160 @@ import os
 class ALPRSystem:
     def __init__(self, root):
         self.root = root
-        self.root.title("KMITL ALPR Dashboard")
+        self.root.title("KMITL ALPR Dashboard - Precision Mode")
         
-        # บังคับ Full Screen สีขาวสะอาดตา
+        # บังคับ Full Screen
+        self.screen_width = self.root.winfo_screenwidth()
+        self.screen_height = self.root.winfo_screenheight()
+        self.root.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
         self.root.attributes('-fullscreen', True)
         self.root.configure(bg="#FFFFFF")
+        self.root.update()
         
-        # --- Config & Assets ---
+        # --- Config ---
         self.kmitl_orange = "#FF6600"
-        self.bg_color = "#FFFFFF"
-        self.card_color = "#F8F9FA"
-        self.text_dark = "#2D3436"
-        self.f_family = "IBM Plex Sans Thai Looped"
-        
-        # Paths
+        self.yolo_path = "E:/Project/CE/my_lpr_model3/weights/best.pt"
+        self.video_test_path = "E:/Project/CE/video_test.mp4"
         self.logo_path = "/home/sunlight-lnwza007/Downloads/logo.png"
-        self.video_test_path = "/home/sunlight-lnwza007/Project/video/video_test.mp4"
-        self.yolo_path = "/home/sunlight-lnwza007/Project/model/weights/best.pt"
-        
-        print("กำลังโหลดโมเดลและเตรียมระบบ...")
+        self.f_family = "IBM Plex Sans Thai Looped"
+
+        print("กำลังโหลดโมเดลประสิทธิภาพสูง...")
         self.model = YOLO(self.yolo_path)
+        # โหลด OCR แบบเน้นภาษาไทย
         self.reader = easyocr.Reader(['th', 'en'], gpu=False)
 
         self.setup_ui()
         self.setup_video_source()
         
         self.running = True
-        self.last_plate = "---"
-        
         self.update_clock()
         threading.Thread(target=self.video_stream, daemon=True).start()
 
     def setup_video_source(self):
-        """ตรวจสอบกล้อง ถ้าไม่มีให้ใช้คลิปวิดีโอ"""
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
-            print(f"⚠️ ไม่พบกล้อง: สลับไปใช้ไฟล์วิดีโอทดสอบที่ {self.video_test_path}")
             self.cap = cv2.VideoCapture(self.video_test_path)
             self.is_video_file = True
         else:
             self.is_video_file = False
 
     def setup_ui(self):
-        """Header ใหม่: โลโก้ซ้าย ข้อความกลาง"""
-        # 1. Header Bar
-        header = tk.Frame(self.root, bg=self.bg_color, height=100, highlightbackground="#EEEEEE", highlightthickness=1)
+        # Header
+        header = tk.Frame(self.root, bg="#FFFFFF", height=100, highlightthickness=1, highlightbackground="#EEEEEE")
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
-
-        # ฝั่งซ้าย: โลโก้
-        logo_container = tk.Frame(header, bg=self.bg_color, width=250)
-        logo_container.pack(side="left", fill="y", padx=20)
         
-        if os.path.exists(self.logo_path):
-            try:
-                logo_img = Image.open(self.logo_path)
-                logo_img = logo_img.resize((180, 70), Image.Resampling.LANCZOS)
-                self.logo_tk = ImageTk.PhotoImage(logo_img)
-                tk.Label(logo_container, image=self.logo_tk, bg=self.bg_color).pack(pady=15)
-            except Exception as e:
-                print(f"Logo Error: {e}")
+        tk.Label(header, text="KMITL ALPR - PRECISION DETECTION", 
+                 font=(self.f_family, 28, "bold"), bg="#FFFFFF", fg=self.kmitl_orange).place(relx=0.5, rely=0.5, anchor="center")
+        
+        self.clock_label = tk.Label(header, font=(self.f_family, 20), bg="#FFFFFF")
+        self.clock_label.pack(side="right", padx=30)
 
-        # ฝั่งขวา: เวลา
-        time_container = tk.Frame(header, bg=self.bg_color, width=250)
-        time_container.pack(side="right", fill="y", padx=20)
-        self.clock_label = tk.Label(time_container, text="", font=(self.f_family, 18), bg=self.bg_color, fg=self.text_dark)
-        self.clock_label.pack(pady=30)
+        # Body
+        content = tk.Frame(self.root, bg="#FFFFFF")
+        content.pack(fill="both", expand=True, padx=30, pady=20)
 
-        # ตรงกลาง: ข้อความหลัก
-        tk.Label(header, text="KMITL AUTOMATIC LICENSE PLATE RECOGNITION", 
-                 font=(self.f_family, 26, "bold"), bg=self.bg_color, fg=self.kmitl_orange).place(relx=0.5, rely=0.5, anchor="center")
-
-        # 2. Main Content
-        content = tk.Frame(self.root, bg=self.bg_color)
-        content.pack(fill="both", expand=True, padx=25, pady=25)
-
-        # ฝั่งซ้าย: หน้าจอวิดีโอ
-        left_panel = tk.Frame(content, bg=self.bg_color)
+        # จอวิดีโอ (ซ้าย)
+        left_panel = tk.Frame(content, bg="#FFFFFF")
         left_panel.pack(side="left", fill="both", expand=True)
-        self.video_container = tk.Label(left_panel, bg="#F0F0F0")
+        self.video_container = tk.Label(left_panel, bg="#000000")
         self.video_container.pack(fill="both", expand=True)
 
-        # ฝั่งขวา: แผงควบคุมและผลลัพธ์
-        right_panel = tk.Frame(content, bg=self.bg_color, width=450)
-        right_panel.pack(side="right", fill="y", padx=(25, 0))
+        # Sidebar (ขวา)
+        right_panel = tk.Frame(content, bg="#FFFFFF", width=500)
+        right_panel.pack(side="right", fill="y", padx=(30, 0))
         right_panel.pack_propagate(False)
 
-        res_card = tk.Frame(right_panel, bg=self.card_color, padx=25, pady=30, highlightbackground="#DDDDDD", highlightthickness=1)
-        res_card.pack(fill="x", pady=(0, 25))
-        tk.Label(res_card, text="ป้ายทะเบียนที่ตรวจพบล่าสุด", font=(self.f_family, 16), bg=self.card_color, fg="#636E72").pack(anchor="w")
-        self.plate_display = tk.Label(res_card, text="---", font=(self.f_family, 80, "bold"), bg=self.card_color, fg=self.kmitl_orange)
-        self.plate_display.pack(pady=25)
+        tk.Label(right_panel, text="ภาพป้ายทะเบียนที่ตรวจพบ", font=(self.f_family, 16, "bold"), bg="#FFFFFF").pack(anchor="w", pady=(0, 10))
+        self.crop_display = tk.Label(right_panel, bg="#E0E0E0", height=10)
+        self.crop_display.pack(fill="x", pady=(0, 30))
 
-        st_card = tk.Frame(right_panel, bg=self.card_color, padx=25, pady=25, highlightbackground="#DDDDDD", highlightthickness=1)
-        st_card.pack(fill="x")
-        self.status_text = tk.Label(st_card, text="● ระบบกำลังวิเคราะห์", font=(self.f_family, 14), bg=self.card_color, fg="#27AE60")
-        self.status_text.pack(anchor="w")
+        # ผลลัพธ์
+        self.res_card = tk.Frame(right_panel, bg="#F8F9FA", padx=25, pady=30, highlightthickness=1, highlightbackground="#DDDDDD")
+        self.res_card.pack(fill="x")
+        
+        tk.Label(self.res_card, text="หมายเลขทะเบียน:", font=(self.f_family, 14), bg="#F8F9FA").pack(anchor="w")
+        self.lbl_num = tk.Label(self.res_card, text="---", font=(self.f_family, 48, "bold"), bg="#F8F9FA", fg=self.kmitl_orange)
+        self.lbl_num.pack(anchor="w", pady=(5, 15))
+        
+        tk.Label(self.res_card, text="จังหวัด:", font=(self.f_family, 14), bg="#F8F9FA").pack(anchor="w")
+        self.lbl_prov = tk.Label(self.res_card, text="---", font=(self.f_family, 26, "bold"), bg="#F8F9FA")
+        self.lbl_prov.pack(anchor="w")
 
-        exit_btn = tk.Button(right_panel, text="ปิดโปรแกรม (ESC)", command=self.on_exit, 
-                             font=(self.f_family, 14), bg="#FF4757", fg="white", relief="flat", pady=15)
-        exit_btn.pack(side="bottom", fill="x")
+        self.exit_btn = tk.Button(right_panel, text="ปิดโปรแกรม (ESC)", command=self.on_exit, 
+                             font=(self.f_family, 16, "bold"), bg="#FF4757", fg="white", relief="flat", pady=20)
+        self.exit_btn.pack(side="bottom", fill="x")
+
+    def improve_plate_quality(self, plate_img):
+        """ปรับปรุงคุณภาพภาพป้ายทะเบียนก่อนส่งให้ OCR"""
+        gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+        # ขยายภาพให้ใหญ่ขึ้น 2 เท่าเพื่อให้ OCR อ่านง่ายขึ้น
+        upscale = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        # ปรับความคมชัด (Thresholding)
+        thresh = cv2.threshold(upscale, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        return thresh
 
     def video_stream(self):
-        """สตรีมวิดีโอพร้อม AI"""
+        frame_count = 0
+        latest_annotated = None
+        
         while self.running:
             ret, frame = self.cap.read()
             if not ret:
-                if self.is_video_file:
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # วนคลิปใหม่ถ้าจบ
-                    continue
+                if self.is_video_file: self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0); continue
+                break
+
+            frame_count += 1
+            # ตรวจจับทุก 2 เฟรมเพื่อความลื่นไหล
+            if frame_count % 2 == 0:
+                # เพิ่ม imgsz เป็น 640 เพื่อความแม่นยำสูงสุด
+                results = self.model(frame, conf=0.5, imgsz=640, verbose=False)
+                
+                if results and len(results[0].boxes) > 0:
+                    latest_annotated = results[0].plot()
+                    
+                    # ทำ OCR เมื่อเจอวัตถุที่มั่นใจ
+                    for box in results[0].boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        # ครอปภาพทะเบียนแบบขยายขอบเล็กน้อย
+                        plate_crop = frame[max(0,y1-5):min(frame.shape[0],y2+5), 
+                                           max(0,x1-5):min(frame.shape[1],x2+5)]
+                        
+                        if plate_crop.size > 0:
+                            # ปรับปรุงภาพก่อนอ่าน
+                            processed_plate = self.improve_plate_quality(plate_crop)
+                            ocr_res = self.reader.readtext(processed_plate)
+                            
+                            if ocr_res:
+                                # อัปเดต UI ทันทีที่อ่านได้
+                                self.root.after(0, self.update_detection_ui, plate_crop, ocr_res)
                 else:
-                    break
+                    latest_annotated = frame.copy()
 
-            # YOLO Detection
-            results = self.model(frame, conf=0.5, verbose=False)
-            
-            for r in results:
-                for box in r.boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    plate = frame[y1:y2, x1:x2]
-                    if plate.size > 0:
-                        ocr_res = self.reader.readtext(plate)
-                        if ocr_res:
-                            text = ocr_res[0][1]
-                            if text != self.last_plate:
-                                self.last_plate = text
-                                self.plate_display.config(text=text)
-
-            self.update_video_view(results[0].plot())
+            self.update_video_view(latest_annotated if latest_annotated is not None else frame)
             time.sleep(0.01)
+
+    def update_detection_ui(self, plate_img, ocr_res):
+        """แสดงผลรูปที่ครอปและข้อความป้ายทะเบียน"""
+        # แสดงรูป Crop
+        img = Image.fromarray(cv2.cvtColor(plate_img, cv2.COLOR_BGR2RGB))
+        img = img.resize((450, 180), Image.Resampling.LANCZOS)
+        imgtk = ImageTk.PhotoImage(image=img)
+        self.crop_display.configure(image=imgtk)
+        self.crop_display.image = imgtk
+
+        # จัดการข้อความ OCR
+        texts = [res[1] for res in ocr_res]
+        if len(texts) >= 2:
+            self.lbl_num.config(text=texts[0])
+            self.lbl_prov.config(text=texts[1])
+        elif len(texts) == 1:
+            self.lbl_num.config(text=texts[0])
+            self.lbl_prov.config(text="กำลังวิเคราะห์...")
 
     def update_video_view(self, frame):
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(img).resize((1300, 850), Image.Resampling.LANCZOS)
+        img = Image.fromarray(img).resize((1350, 850), Image.Resampling.NEAREST)
         imgtk = ImageTk.PhotoImage(image=img)
         self.video_container.configure(image=imgtk)
         self.video_container.image = imgtk

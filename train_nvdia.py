@@ -1,5 +1,7 @@
 import os
 import time
+import random
+import cv2
 import torch
 import platform
 import getpass
@@ -8,33 +10,39 @@ import datetime
 from ultralytics import YOLO
 
 # =========================================================
-# 1. ตั้งค่าพื้นฐาน (Configuration)
+# 1. ตั้งค่า (Configuration)
 # =========================================================
 DISCORD_WEBHOOK_URL = "ใส่_WEBHOOK_URL_ของคุณที่นี่"
 DATA_YAML_PATH = r'G:\Project\Data\pengsiri\data.yaml'
 
-# Path ไฟล์เก่า (ถ้ามี)
-OLD_WEIGHTS_PATH = r'G:\Project\Licence-Plate-Detection\runs\detect\yolov26_lpr_smart_guard\weights\best.pt'
-DEFAULT_MODEL = 'yolo26n.pt'
-PROJECT_NAME = 'yolov26_lpr_auto_pilot' # เปลี่ยนชื่อให้สื่อความหมาย
+# --- [ตั้งค่าไฟล์วิดีโอสำหรับทดสอบ] ---
+# ⚠️ สำคัญ: ใส่ Path ไฟล์วิดีโอที่มีอยู่ในเครื่องตรงนี้
+TEST_VIDEO_PATH = r'G:\Project\Data\pengsiri\test_video.mp4' 
 
-# สีสถานะ Discord
-COLOR_HEALTHY = 0x2ecc71  # เขียว (ปกติ)
-COLOR_WARNING = 0xf1c40f  # เหลือง (เริ่มนิ่ง)
-COLOR_DANGER  = 0xe74c3c  # แดง (Overfitting)
-COLOR_FINISH  = 0x9b59b6  # ม่วง (เสร็จแล้ว)
+# --- [Phase 1: คัดเลือกตัวนักกีฬา] ---
+SEARCH_ROUNDS = 3       # แข่งกี่รอบ
+SEARCH_EPOCHS = 50      # รอบคัดตัว
 
-start_training_time = None
+# --- [Phase 2: ปั้นแชมป์] ---
+FINAL_EPOCHS = 100
+PROJECT_NAME = 'yolov26_auto_champion_video'
+
+# สี Discord
+COLOR_INFO = 0x3498db
+COLOR_WIN  = 0xf1c40f
+COLOR_FINAL= 0x9b59b6
 
 # =========================================================
-# 2. ฟังก์ชันแจ้งเตือน (Notification System)
+# 2. ระบบ Discord (แจ้งเตือน & ส่งไฟล์)
 # =========================================================
-def send_discord_image(file_path, caption=""):
+def send_discord_file(file_path, caption=""):
+    """ฟังก์ชันส่งไฟล์ (รูปหรือวิดีโอ) เข้า Discord"""
     if not os.path.exists(file_path): return
     try:
         with open(file_path, 'rb') as f:
-            requests.post(DISCORD_WEBHOOK_URL, data={"content": caption}, files={"file": f}, timeout=20)
-    except: pass
+            requests.post(DISCORD_WEBHOOK_URL, data={"content": caption}, files={"file": f}, timeout=30)
+    except Exception as e:
+        print(f"Error sending file: {e}")
 
 def send_discord_embed(title, description, color, fields=None):
     try:
@@ -44,7 +52,7 @@ def send_discord_embed(title, description, color, fields=None):
                 "description": description,
                 "color": color,
                 "fields": fields if fields else [],
-                "footer": {"text": f"AutoPilot AI | {getpass.getuser()}@{platform.node()}"},
+                "footer": {"text": f"AutoChampion AI | {getpass.getuser()}"},
                 "timestamp": datetime.datetime.now().astimezone().isoformat()
             }]
         }
@@ -52,129 +60,169 @@ def send_discord_embed(title, description, color, fields=None):
     except: pass
 
 # =========================================================
-# 3. ระบบ Callbacks (Smart Monitor + Time Calculation)
+# 3. ฟังก์ชันสร้างคลิปทดสอบ (Video Test)
 # =========================================================
-def on_train_start(trainer):
-    global start_training_time
-    start_training_time = time.time()
-    
-    model_name = "Old best.pt (Fine-tuning)" if os.path.exists(OLD_WEIGHTS_PATH) else "New YOLO26n"
-    
-    send_discord_embed(
-        "🚀 Auto-Pilot Started", 
-        f"Base Model: **{model_name}**\nโหมด: **ปล่อยเทรนยาว (Auto-Stop on Overfit)**", 
-        COLOR_HEALTHY
-    )
+def run_local_video_test(model_path, source_video, duration_sec=10):
+    if not os.path.exists(source_video):
+        send_discord_embed("⚠️ Video Not Found", f"หาไฟล์วิดีโอไม่เจอ: `{source_video}`", 0xe74c3c)
+        return
 
-def on_train_epoch_end(trainer):
+    print(f"🎬 Creating Test Video from: {os.path.basename(source_video)}...")
+    output_video = "test_result_preview.mp4"
+    if os.path.exists(output_video): os.remove(output_video)
+
+    # Setup Video
+    cap = cv2.VideoCapture(source_video)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Resize ลงถ้าวิดีโอใหญ่เกิน (เพื่อลดขนาดไฟล์ส่ง Discord)
+    if width > 1280:
+        scale = 1280 / width
+        width = int(width * scale)
+        height = int(height * scale)
+
+    # ใช้ mp4v codec
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
+    
+    model = YOLO(model_path)
+    max_frames = int(fps * duration_sec)
+    frame_count = 0
+    
+    while cap.isOpened() and frame_count < max_frames:
+        success, frame = cap.read()
+        if not success: break
+        
+        # Resize frame ก่อนส่งเข้าโมเดล (ถ้าจำเป็น)
+        if frame.shape[1] != width:
+            frame = cv2.resize(frame, (width, height))
+
+        # ให้ AI จับภาพ (conf=0.4 คือต้องมั่นใจ 40% ถึงจะวาด)
+        results = model(frame, verbose=False, conf=0.4)
+        annotated_frame = results[0].plot()
+        
+        out.write(annotated_frame)
+        frame_count += 1
+
+    cap.release()
+    out.release()
+    
+    # ส่งเข้า Discord
+    file_size_mb = os.path.getsize(output_video) / (1024 * 1024)
+    if file_size_mb < 25: # เช็คขนาดไฟล์ (Discord Limit)
+        send_discord_file(output_video, f"🎥 **คลิปทดสอบ (Round 1 Result)**\nModel: `{os.path.basename(model_path)}`")
+        print("   ✅ Video sent to Discord!")
+    else:
+        send_discord_embed("⚠️ File Too Large", f"คลิปใหญ่เกินไป ({file_size_mb:.2f} MB)", 0xe74c3c)
+
+# =========================================================
+# 4. Callbacks (รอบชิง)
+# =========================================================
+start_final_time = None
+def on_final_start(trainer):
+    global start_final_time
+    start_final_time = time.time()
+
+def on_final_epoch_end(trainer):
     epoch = trainer.epoch + 1
-    total_epochs = trainer.args.epochs
-    
-    # --- [ส่วนคำนวณเวลาแบบใหม่] ---
-    elapsed_seconds = time.time() - start_training_time
-    avg_time_per_epoch = elapsed_seconds / epoch
-    remaining_epochs = total_epochs - epoch
-    eta_seconds = remaining_epochs * avg_time_per_epoch
-    
-    # แปลงเป็นเวลาที่เหลือ (เช่น 1:30:00)
-    eta_str = str(datetime.timedelta(seconds=int(eta_seconds)))
-    
-    # คำนวณ "เวลาที่จะเสร็จ" (Timestamp)
-    finish_time = datetime.datetime.now() + datetime.timedelta(seconds=eta_seconds)
-    finish_time_str = finish_time.strftime("%H:%M น.") # เช่น 14:30 น.
-    # -----------------------------
-
-    metrics = trainer.metrics
-    map50 = metrics.get('metrics/mAP50(B)', 0.0)
-    train_box_loss = trainer.loss_items[0].item()
-
-    # Logic ตรวจสุขภาพโมเดล (เหมือนเดิม)
-    status_msg = "🟢 ปกติ (Healthy)"
-    status_color = COLOR_HEALTHY
-    if epoch > 50 and map50 < 0.5 and train_box_loss < 0.5:
-        status_msg = "🔴 เริ่มจำข้อสอบ (Overfitting Alert)"
-        status_color = COLOR_DANGER
-    elif map50 < 0.3 and epoch > 30:
-        status_msg = "🟡 เรียนรู้ช้า (Underfitting)"
-        status_color = COLOR_WARNING
-
-    fields = [
-        {"name": "🔄 Epoch", "value": f"`{epoch}/{total_epochs}`", "inline": True},
-        {"name": "🎯 mAP50", "value": f"`{map50:.4f}`", "inline": True},
-        {"name": "📉 Train Loss", "value": f"`{train_box_loss:.4f}`", "inline": True},
-        
-        # ช่องใหม่: เวลาที่คาดว่าจะเสร็จ
-        {"name": "⏰ คาดว่าจะเสร็จตอน", "value": f"**`{finish_time_str}`** (อีก `{eta_str}`)", "inline": False},
-        
-        {"name": "🩺 Health", "value": f"{status_msg}", "inline": False}
-    ]
-    
-    send_discord_embed("📊 Progress Update", "สถานะการเทรนล่าสุด", status_color, fields)
-
     if epoch % 20 == 0:
-        val_plot = os.path.join(trainer.save_dir, 'val_batch0_pred.jpg')
-        time.sleep(1)
-        send_discord_image(val_plot, f"🖼️ **ตัวอย่างผลการทำนายที่ Epoch {epoch}**")
+        metrics = trainer.metrics
+        map50 = metrics.get('metrics/mAP50(B)', 0.0)
+        elapsed = time.time() - start_final_time
+        avg_time = elapsed / epoch
+        eta = str(datetime.timedelta(seconds=int((trainer.args.epochs - epoch) * avg_time)))
+        
+        fields = [
+            {"name": "🔥 Final Training", "value": f"Epoch `{epoch}/{trainer.args.epochs}`", "inline": True},
+            {"name": "🎯 mAP50", "value": f"`{map50:.4f}`", "inline": True},
+            {"name": "⏳ ETA", "value": f"`{eta}`", "inline": True}
+        ]
+        send_discord_embed("📊 Champion Progress", "กำลังเทรนโมเดลผู้ชนะ...", COLOR_FINAL, fields)
 
-def on_train_end(trainer):
+def on_final_end(trainer):
     time.sleep(2)
-    result_plot = os.path.join(trainer.save_dir, 'results.png')
-    send_discord_image(result_plot, "📈 **สรุปผลการเทรนทั้งหมด**")
-    
-    stop_reason = "ครบกำหนด 100 รอบ"
-    # เช็คว่าจบก่อนกำหนดไหม (Early Stopping)
-    if trainer.epoch + 1 < trainer.args.epochs:
-        stop_reason = "หยุดอัตโนมัติ (Early Stopping) เพื่อกัน Overfit"
-
-    total_time = str(datetime.timedelta(seconds=int(time.time() - start_training_time)))
-    send_discord_embed("✅ Mission Complete!", f"จบงานแล้วครับลูกพี่!\nสาเหตุ: **{stop_reason}**\nเวลาที่ใช้ไป: `{total_time}`", COLOR_FINISH)
+    send_discord_file(os.path.join(trainer.save_dir, 'results.png'), "📈 **สรุปผลงานระดับแชมป์**")
 
 # =========================================================
-# 4. Main Process
+# 5. Main Process
 # =========================================================
 if __name__ == '__main__':
     
-    if os.path.exists(OLD_WEIGHTS_PATH):
-        print("--- Fine-tuning Mode ---")
-        model = YOLO(OLD_WEIGHTS_PATH)
-    else:
-        print("--- New Training Mode ---")
-        model = YOLO(DEFAULT_MODEL)
+    # --- PHASE 1: Audition ---
+    print(f"🎬 PHASE 1: Searching ({SEARCH_ROUNDS} Rounds)...")
+    send_discord_embed("🎬 Phase 1 Start", f"เริ่มคัดตัว {SEARCH_ROUNDS} รอบ...", COLOR_INFO)
+    
+    results_log = []
+    
+    for r in range(1, SEARCH_ROUNDS + 1):
+        seed = random.randint(1, 9999)
+        run_name = f"audition_round_{r}"
+        print(f"   Running Round {r} (Seed {seed})")
+        
+        model = YOLO('yolo26n.pt')
+        model.train(
+            data=DATA_YAML_PATH,
+            epochs=SEARCH_EPOCHS,
+            imgsz=640,
+            batch=16,
+            device=0,
+            project='runs/detect',
+            name=run_name,
+            exist_ok=True,
+            seed=seed,
+            verbose=False
+        )
+        
+        score = model.trainer.metrics.get('metrics/mAP50(B)', 0.0)
+        path = str(model.trainer.best)
+        results_log.append({"round": r, "seed": seed, "score": score, "path": path})
+        print(f"   -> Round {r} Score: {score:.4f}")
+        
+        # *** จุดเปลี่ยนสำคัญ: ถ้าเป็นรอบที่ 1 ให้ส่งคลิป ***
+        if r == 1:
+            print("   🎥 Generating Test Video for Round 1...")
+            send_discord_embed("🎥 Generating Video", "กำลังสร้างคลิปทดสอบจากผลลัพธ์รอบแรก...", 0xf1c40f)
+            run_local_video_test(path, TEST_VIDEO_PATH, duration_sec=10)
+        # **********************************************
 
-    model.add_callback("on_train_start", on_train_start)
-    model.add_callback("on_train_epoch_end", on_train_epoch_end)
-    model.add_callback("on_train_end", on_train_end)
-
-    # *** ตั้งค่าสำหรับคนไม่อยู่หน้าจอ ***
-    model.train(
+    # --- DECISION ---
+    results_log.sort(key=lambda x: x['score'], reverse=True)
+    winner = results_log[0]
+    
+    fields = [
+        {"name": "🏆 The Winner", "value": f"**Round {winner['round']}**", "inline": False},
+        {"name": "🚀 Base mAP", "value": f"`{winner['score']:.4f}`", "inline": True}
+    ]
+    send_discord_embed("✨ ได้ผู้ชนะแล้ว!", "ระบบกำลังเริ่มเทรนต่อทันที...", COLOR_WIN, fields)
+    
+    # --- PHASE 2: Final ---
+    print("\n🚀 PHASE 2: Final Training...")
+    champion_model = YOLO(winner['path'])
+    champion_model.add_callback("on_train_start", on_final_start)
+    champion_model.add_callback("on_train_epoch_end", on_final_epoch_end)
+    champion_model.add_callback("on_train_end", on_final_end)
+    
+    champion_model.train(
         data=DATA_YAML_PATH,
-        epochs=100,
+        epochs=FINAL_EPOCHS,
         imgsz=640,
         batch=16,
         device=0,
-        name=PROJECT_NAME,
+        project='runs/detect',
+        name='CHAMPION_FINAL',
         exist_ok=True,
-        workers=4,
-        
-        # --- ระบบกันตาย (Smart Guard) ---
-        patience=20,      # <--- พระเอกของเรา: ถ้าไม่เก่งขึ้นใน 20 รอบ จะหยุดเองทันที (คุณกลับมาจะได้ไม่เสียเวลาเปล่า)
-        dropout=0.15,     # กันท่องจำ
-        
-        # --- เพิ่มความโหดให้เก่งจริง ---
-        mosaic=1.0, 
-        mixup=0.15,
-        degrees=15.0,
-        perspective=0.0005,
-        copy_paste=0.1
+        patience=20,
+        dropout=0.15,
+        mosaic=0.5,
+        degrees=10.0,
+        workers=4
     )
-
-    # *** Auto Export: เอาไปลง Pi ได้เลย ***
+    
     try:
-        print("--- Exporting Best Model to NCNN ---")
-        # YOLO จะเลือก best.pt ให้อัตโนมัติหลังเทรนเสร็จ
-        exported_file = model.export(format='ncnn') 
-        send_discord_embed("📦 Ready for Raspberry Pi", f"ไฟล์ NCNN ถูกสร้างเรียบร้อยแล้ว!\nตำแหน่ง: `{exported_file}`", COLOR_FINISH)
-    except Exception as e:
-        send_discord_embed("❌ Export Failed", f"Error: {e}", COLOR_DANGER)
-
-    print("!!! All Done. You can close this window now. !!!")
+        export_path = champion_model.export(format='ncnn')
+        send_discord_embed("📦 Mission Complete", f"ไฟล์พร้อมใช้งานบน Pi:\n`{export_path}`", 0x2ecc71)
+    except: pass
+    
+    print("!!! ALL DONE !!!")
