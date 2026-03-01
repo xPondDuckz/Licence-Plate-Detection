@@ -2,6 +2,8 @@ import os
 import cv2
 import time
 import threading
+import socket
+import struct
 from datetime import datetime
 import pytz
 import tkinter as tk
@@ -31,7 +33,7 @@ class ALPRSystem:
         os.makedirs(self.save_dir, exist_ok=True)
         
         # ==========================================
-        # ⚙️ การตั้งค่าระบบ
+        # การตั้งค่าระบบ
         # ==========================================
         self.show_debug_fps = True
         self.save_to_disk = True
@@ -46,11 +48,13 @@ class ALPRSystem:
         self.plate_timeout = 1.5   
         
         self.history_data = []
+        
+        # ตัวแปรจัดการเวลา
+        self.time_offset = 0.0
 
         print("กำลังโหลดโมเดล OpenVINO...")
         self.model = YOLO(self.yolo_path, task='detect')
 
-        # สร้าง Container หลักสำหรับบรรจุหน้าแต่ละหน้า
         self.main_container = tk.Frame(self.root, bg="#F0F2F5")
         self.main_container.pack(fill="both", expand=True)
 
@@ -61,6 +65,7 @@ class ALPRSystem:
         
         threading.Thread(target=self.camera_thread, daemon=True).start()
         threading.Thread(target=self.ai_thread, daemon=True).start()
+        threading.Thread(target=self.sync_time_thread, daemon=True).start()
         
         self.root.after(1000, self.update_gui_loop)
 
@@ -74,7 +79,7 @@ class ALPRSystem:
         self.header_height = 120
         self.right_panel_width = 450
         
-        # --- หน้า Dashboard หลัก (กล้อง) ---
+        # --- หน้า Dashboard หลัก ---
         header = tk.Frame(self.main_container, bg=self.kmitl_orange, height=self.header_height)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
@@ -123,13 +128,46 @@ class ALPRSystem:
         self.video_container = tk.Label(left_panel, bg="#000000")
         self.video_container.place(relx=0.5, rely=0.5, anchor="center")
 
+    # ================= ฟังก์ชันจัดการเวลาผ่าน Network =================
+    def sync_time_thread(self):
+        while self.running:
+            try:
+                # ดึงเวลาจาก NTP Server
+                client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                client.settimeout(5.0)
+                client.sendto(b'\x1b' + 47 * b'\0', ('pool.ntp.org', 123))
+                msg, address = client.recvfrom(1024)
+                
+                t = struct.unpack("!12I", msg)[10]
+                ntp_time = t - 2208988800 # แปลงเป็น Unix timestamp
+                
+                # หาค่าชดเชยเวลา (เวลาเน็ต - เวลาเครื่อง)
+                self.time_offset = ntp_time - time.time()
+                print(f"Sync time success! Offset: {self.time_offset:.2f} sec")
+                
+                # ถ้าเชื่อมต่อสำเร็จ รอ 1 ชั่วโมงค่อยเช็คใหม่
+                time.sleep(3600)
+            except Exception as e:
+                print("กำลังรอการเชื่อมต่ออินเทอร์เน็ตเพื่อซิงค์เวลา...")
+                # ถ้าเน็ตไม่มา ให้ลองใหม่ทุกๆ 10 วินาที
+                time.sleep(10)
+
+    def get_synced_datetime(self):
+        # เอาเวลาเครื่องมาบวกค่าชดเชยเวลาเน็ต
+        real_timestamp = time.time() + self.time_offset
+        return datetime.fromtimestamp(real_timestamp, pytz.timezone('Asia/Bangkok'))
+
+    # ================= ================= =================
+
     def measure_clarity(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         return cv2.Laplacian(gray, cv2.CV_64F).var()
 
     def process_best_plate(self, plate_img):
-        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        filename_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # ใช้ฟังก์ชัน get_synced_datetime แทน datetime.now() ปกติ
+        now = self.get_synced_datetime()
+        timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
+        filename_time = now.strftime("%Y%m%d_%H%M%S")
         
         self.history_data.append({
             "time": timestamp,
@@ -145,22 +183,18 @@ class ALPRSystem:
             
         self.root.after(0, self.update_detection_ui, plate_img, status_msg)
 
-    # ================= ระบบสลับหน้าต่าง (Page Transition) =================
+    # ================= ระบบหน้าต่างประวัติ =================
     def show_history(self):
-        # 1. ซ่อนหน้าหลัก (แต่ไม่ได้ทำลายทิ้ง วิดีโอยังอัปเดตเบื้องหลังได้)
         self.main_container.pack_forget()
         
-        # 2. สร้างหน้าประวัติแบบเต็มจอขึ้นมาใหม่
         self.history_container = tk.Frame(self.root, bg="#F0F2F5")
         self.history_container.pack(fill="both", expand=True)
         
-        # Header ของหน้าประวัติ
         hist_header = tk.Frame(self.history_container, bg=self.kmitl_orange, height=self.header_height)
         hist_header.pack(fill="x", side="top")
         hist_header.pack_propagate(False)
         
-        # ปุ่มกลับหน้าหลัก
-        back_btn = tk.Button(hist_header, text="⬅ กลับหน้าหลัก", command=self.hide_history, 
+        back_btn = tk.Button(hist_header, text="< กลับหน้าหลัก", command=self.hide_history, 
                              font=(self.f_family, 16, "bold"), bg="#FFFFFF", fg=self.kmitl_orange, relief="flat", padx=15)
         back_btn.pack(side="left", padx=30, pady=20)
         
@@ -169,7 +203,6 @@ class ALPRSystem:
         hist_content = tk.Frame(self.history_container, bg="#F0F2F5")
         hist_content.pack(fill="both", expand=True, padx=40, pady=40)
         
-        # รายการเวลา (ฝั่งซ้าย)
         list_frame = tk.Frame(hist_content, bg="#FFFFFF", width=350, highlightthickness=1, highlightbackground="#DDDDDD")
         list_frame.pack(side="left", fill="y", padx=(0, 20))
         list_frame.pack_propagate(False)
@@ -184,7 +217,6 @@ class ALPRSystem:
         self.log_listbox.pack(side="left", fill="both", expand=True, padx=20, pady=(0, 20))
         scrollbar.config(command=self.log_listbox.yview)
 
-        # รูปภาพป้ายทะเบียน (ฝั่งขวา)
         img_frame = tk.Frame(hist_content, bg="#FFFFFF", highlightthickness=1, highlightbackground="#DDDDDD")
         img_frame.pack(side="right", fill="both", expand=True)
         
@@ -192,16 +224,13 @@ class ALPRSystem:
         self.hist_img_label = tk.Label(img_frame, bg="#E9ECEF", text="คลิกที่เวลาด้านซ้าย\nเพื่อดูภาพป้ายทะเบียน", font=(self.f_family, 16), fg="#888888")
         self.hist_img_label.pack(expand=True, fill="both", padx=30, pady=(0, 30))
 
-        # ดึงข้อมูลมาใส่ลิสต์ (เรียงใหม่ -> เก่า)
         for record in reversed(self.history_data):
             self.log_listbox.insert("end", record['time'])
 
         self.log_listbox.bind("<<ListboxSelect>>", self.on_history_select)
 
     def hide_history(self):
-        # ทำลายหน้าประวัติทิ้ง
         self.history_container.destroy()
-        # นำหน้าหลักกลับมาโชว์
         self.main_container.pack(fill="both", expand=True)
 
     def on_history_select(self, event):
@@ -210,7 +239,6 @@ class ALPRSystem:
             index = len(self.history_data) - 1 - selection[0]
             record = self.history_data[index]
             
-            # โชว์รูปใหญ่ๆ ให้ชัดเจนขึ้น
             img = record['image']
             plate_img_resized = cv2.resize(img, (600, 250), interpolation=cv2.INTER_LINEAR)
             img_pil = Image.fromarray(cv2.cvtColor(plate_img_resized, cv2.COLOR_BGR2RGB))
@@ -310,7 +338,6 @@ class ALPRSystem:
             img = Image.fromarray(img) 
             imgtk = ImageTk.PhotoImage(image=img)
             
-            # อัปเดตวิดีโอเข้า Label แม้จะซ่อนหน้าหลักไปแล้วก็ไม่ทำให้โปรแกรมล่ม
             self.video_container.configure(image=imgtk)
             self.video_container.image = imgtk
 
