@@ -4,6 +4,7 @@ import time
 import threading
 import socket
 import struct
+import json
 from datetime import datetime
 import pytz
 import tkinter as tk
@@ -51,6 +52,12 @@ class ALPRSystem:
         
         # ตัวแปรจัดการเวลา
         self.time_offset = 0.0
+        self.is_time_synced = False
+        self.unsynced_counter = 1
+        
+        # จับเวลาตั้งแต่เริ่มรันโปรแกรม
+        self.app_start_time = time.monotonic() 
+        self.history_file = os.path.join(self.save_dir, "history_log.json")
 
         print("กำลังโหลดโมเดล OpenVINO...")
         self.model = YOLO(self.yolo_path, task='detect')
@@ -61,6 +68,9 @@ class ALPRSystem:
         self.setup_ui()
         self.setup_video_source()
         
+        # โหลดประวัติเก็บไว้ในระบบเบื้องหลัง
+        self.load_history_from_disk()
+        
         self.running = True
         
         threading.Thread(target=self.camera_thread, daemon=True).start()
@@ -69,6 +79,43 @@ class ALPRSystem:
         
         self.root.after(1000, self.update_gui_loop)
 
+    # ================= ระบบจัดการไฟล์ประวัติ =================
+    def load_history_from_disk(self):
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    saved_history = json.load(f)
+                
+                for record in saved_history:
+                    img_path = os.path.join(self.save_dir, record['filename'])
+                    if os.path.exists(img_path):
+                        img = cv2.imread(img_path)
+                        if img is not None:
+                            self.history_data.append({
+                                "time": record['time'],
+                                "image": img
+                            })
+            except Exception as e:
+                print(f"เกิดข้อผิดพลาดในการโหลดประวัติเดิม: {e}")
+
+    def save_history_record(self, time_str, filename):
+        try:
+            history_list = []
+            if os.path.exists(self.history_file):
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    history_list = json.load(f)
+            
+            history_list.append({"time": time_str, "filename": filename})
+            
+            if len(history_list) > 100:
+                history_list = history_list[-100:]
+                
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(history_list, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"เกิดข้อผิดพลาดในการบันทึกประวัติ: {e}")
+    # ========================================================
+
     def setup_video_source(self):
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -76,10 +123,10 @@ class ALPRSystem:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     def setup_ui(self):
-        self.header_height = 120
-        self.right_panel_width = 450
+        # ปรับขนาดแถบด้านบนลง เพื่อให้มีพื้นที่เหลือในหน้าจอ Raspberry Pi
+        self.header_height = 80 
+        self.right_panel_width = 380
         
-        # --- หน้า Dashboard หลัก ---
         header = tk.Frame(self.main_container, bg=self.kmitl_orange, height=self.header_height)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
@@ -87,75 +134,87 @@ class ALPRSystem:
         try:
             if os.path.exists(self.logo_path):
                 logo_img = Image.open(self.logo_path)
-                logo_img = logo_img.resize((100, 100), Image.LANCZOS)
+                logo_img = logo_img.resize((60, 60), Image.LANCZOS)
                 self.logo_tk = ImageTk.PhotoImage(logo_img)
                 logo_label = tk.Label(header, image=self.logo_tk, bg=self.kmitl_orange)
-                logo_label.pack(side="left", padx=30, pady=10)
+                logo_label.pack(side="left", padx=20, pady=10)
             else:
-                tk.Label(header, text="[ไม่มีโลโก้]", font=(self.f_family, 12), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=30, pady=40)
+                tk.Label(header, text="[ไม่มีโลโก้]", font=(self.f_family, 10), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=20, pady=25)
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการโหลดรูปโลโก้: {e}")
-            tk.Label(header, text="[Logo Error]", font=(self.f_family, 12), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=30, pady=40)
+            tk.Label(header, text="[Logo Error]", font=(self.f_family, 10), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=20, pady=25)
         
         tk.Label(header, text="ตรวจจับป้ายทะเบียน KMITL PCC", 
-                 font=(self.f_family, 32, "bold"), bg=self.kmitl_orange, fg="#FFFFFF").place(relx=0.5, rely=0.5, anchor="center")
+                 font=(self.f_family, 26, "bold"), bg=self.kmitl_orange, fg="#FFFFFF").place(relx=0.5, rely=0.5, anchor="center")
 
         content = tk.Frame(self.main_container, bg="#F0F2F5")
-        content.pack(fill="both", expand=True, padx=20, pady=20)
+        content.pack(fill="both", expand=True, padx=15, pady=15)
 
         right_panel = tk.Frame(content, bg="#FFFFFF", width=self.right_panel_width, highlightthickness=1, highlightbackground="#DDDDDD")
-        right_panel.pack(side="right", fill="y", padx=(20, 0))
+        right_panel.pack(side="right", fill="y", padx=(15, 0))
         right_panel.pack_propagate(False)
 
-        tk.Label(right_panel, text="ป้ายทะเบียนที่ตรวจพบล่าสุด", 
-                 font=(self.f_family, 20, "bold"), bg="#FFFFFF", fg="#2C3E50").pack(anchor="center", pady=(30, 10))
-        
-        self.crop_display = tk.Label(right_panel, bg="#E9ECEF", width=400, height=180) 
-        self.crop_display.pack(padx=25, pady=10)
-        
-        self.status_label = tk.Label(right_panel, text="กำลังรอรถผ่านกล้อง...", font=(self.f_family, 14), bg="#FFFFFF", fg="#888888")
-        self.status_label.pack(pady=10)
+        # -------------------------------------------------------------
+        # ✅ สร้างปุ่มจากด้านล่างก่อน เพื่อการันตีว่ามันจะไม่โดนดันตกจอ
+        tk.Label(right_panel, text="* กดปุ่ม ESC บนคีย์บอร์ดเพื่อออกจากโปรแกรม", 
+                 font=(self.f_family, 10), bg="#FFFFFF", fg="#AAAAAA").pack(side="bottom", pady=(5, 10))
 
         self.history_btn = tk.Button(right_panel, text="ดูประวัติย้อนหลัง (Logs)", command=self.show_history, 
                              font=(self.f_family, 16, "bold"), bg="#007BFF", fg="white", relief="flat", pady=15)
-        self.history_btn.pack(side="bottom", fill="x", padx=20, pady=(0, 20))
+        self.history_btn.pack(side="bottom", fill="x", padx=20, pady=(0, 5))
+        # -------------------------------------------------------------
+
+        tk.Label(right_panel, text="ป้ายทะเบียนที่ตรวจพบล่าสุด", 
+                 font=(self.f_family, 18, "bold"), bg="#FFFFFF", fg="#2C3E50").pack(side="top", pady=(20, 10))
         
-        tk.Label(right_panel, text="* กดปุ่ม ESC บนคีย์บอร์ดเพื่อออกจากโปรแกรม", 
-                 font=(self.f_family, 10), bg="#FFFFFF", fg="#AAAAAA").pack(side="bottom", pady=(0, 5))
+        # ✅ สร้างรูปภาพสีเทาขนาด 300x120 พิกเซล แปะจองที่ไว้เลย (ป้องกันบั๊กกรอบยักษ์ 180 บรรทัด)
+        blank_img = Image.new('RGB', (300, 120), color='#E9ECEF')
+        self.blank_tk = ImageTk.PhotoImage(blank_img)
+        
+        self.crop_display = tk.Label(right_panel, image=self.blank_tk, bg="#E9ECEF") 
+        self.crop_display.pack(side="top", padx=20, pady=5)
+        
+        self.status_label = tk.Label(right_panel, text="กำลังรอรถผ่านกล้อง...", font=(self.f_family, 14), bg="#FFFFFF", fg="#888888")
+        self.status_label.pack(side="top", pady=10)
 
         left_panel = tk.Frame(content, bg="#000000")
         left_panel.pack(side="left", fill="both", expand=True)
         self.video_container = tk.Label(left_panel, bg="#000000")
         self.video_container.place(relx=0.5, rely=0.5, anchor="center")
 
-    # ================= ฟังก์ชันจัดการเวลาผ่าน Network =================
+    # ================= ฟังก์ชันจัดการเวลาและรูปแบบภาษาไทย =================
     def sync_time_thread(self):
         while self.running:
             try:
-                # ดึงเวลาจาก NTP Server
                 client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 client.settimeout(5.0)
                 client.sendto(b'\x1b' + 47 * b'\0', ('pool.ntp.org', 123))
                 msg, address = client.recvfrom(1024)
                 
                 t = struct.unpack("!12I", msg)[10]
-                ntp_time = t - 2208988800 # แปลงเป็น Unix timestamp
+                ntp_time = t - 2208988800
                 
-                # หาค่าชดเชยเวลา (เวลาเน็ต - เวลาเครื่อง)
                 self.time_offset = ntp_time - time.time()
-                print(f"Sync time success! Offset: {self.time_offset:.2f} sec")
+                self.is_time_synced = True
                 
-                # ถ้าเชื่อมต่อสำเร็จ รอ 1 ชั่วโมงค่อยเช็คใหม่
                 time.sleep(3600)
             except Exception as e:
-                print("กำลังรอการเชื่อมต่ออินเทอร์เน็ตเพื่อซิงค์เวลา...")
-                # ถ้าเน็ตไม่มา ให้ลองใหม่ทุกๆ 10 วินาที
+                self.is_time_synced = False
                 time.sleep(10)
 
     def get_synced_datetime(self):
-        # เอาเวลาเครื่องมาบวกค่าชดเชยเวลาเน็ต
         real_timestamp = time.time() + self.time_offset
         return datetime.fromtimestamp(real_timestamp, pytz.timezone('Asia/Bangkok'))
+
+    def format_thai_date(self, dt):
+        thai_months = [
+            "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
+        ]
+        day = dt.day
+        month = thai_months[dt.month - 1]
+        year = dt.year + 543
+        time_str = dt.strftime("%H:%M:%S")
+        return f"{day} {month} {year} เวลา {time_str}"
 
     # ================= ================= =================
 
@@ -164,22 +223,39 @@ class ALPRSystem:
         return cv2.Laplacian(gray, cv2.CV_64F).var()
 
     def process_best_plate(self, plate_img):
-        # ใช้ฟังก์ชัน get_synced_datetime แทน datetime.now() ปกติ
-        now = self.get_synced_datetime()
-        timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
-        filename_time = now.strftime("%Y%m%d_%H%M%S")
+        now_local = datetime.now()
+        
+        if self.is_time_synced:
+            now = self.get_synced_datetime()
+            timestamp_ui = self.format_thai_date(now)
+            filename_str = f"plate_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
+        else:
+            if now_local.year < 2024:
+                elapsed = int(time.monotonic() - self.app_start_time)
+                mins, secs = divmod(elapsed, 60)
+                hours, mins = divmod(mins, 60)
+                
+                timestamp_ui = f"โหมดออฟไลน์ [{hours:02d}:{mins:02d}:{secs:02d}]"
+                filename_str = f"plate_offline_{self.unsynced_counter:04d}.jpg"
+            else:
+                timestamp_ui = self.format_thai_date(now_local)
+                filename_str = f"plate_{self.unsynced_counter:04d}_{now_local.strftime('%H%M%S')}.jpg"
+                
+            self.unsynced_counter += 1
         
         self.history_data.append({
-            "time": timestamp,
+            "time": timestamp_ui,
             "image": plate_img.copy()
         })
 
         if self.save_to_disk:
-            filename = os.path.join(self.save_dir, f"plate_{filename_time}.jpg")
+            filename = os.path.join(self.save_dir, filename_str)
             cv2.imwrite(filename, plate_img) 
-            status_msg = f"ดึงภาพสำเร็จและบันทึกลงเครื่องแล้ว\nเมื่อ {timestamp}"
+            status_msg = f"ดึงภาพสำเร็จและบันทึกลงเครื่องแล้ว\nเมื่อ {timestamp_ui}"
+            
+            self.save_history_record(timestamp_ui, filename_str)
         else:
-            status_msg = f"ดึงภาพเสร็จสิ้น\nเมื่อ {timestamp}"
+            status_msg = f"ดึงภาพเสร็จสิ้น\nเมื่อ {timestamp_ui}"
             
         self.root.after(0, self.update_detection_ui, plate_img, status_msg)
 
@@ -196,33 +272,33 @@ class ALPRSystem:
         
         back_btn = tk.Button(hist_header, text="< กลับหน้าหลัก", command=self.hide_history, 
                              font=(self.f_family, 16, "bold"), bg="#FFFFFF", fg=self.kmitl_orange, relief="flat", padx=15)
-        back_btn.pack(side="left", padx=30, pady=20)
+        back_btn.pack(side="left", padx=20, pady=15)
         
-        tk.Label(hist_header, text="ประวัติการตรวจจับป้ายทะเบียน", font=(self.f_family, 26, "bold"), bg=self.kmitl_orange, fg="#FFFFFF").place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(hist_header, text="ประวัติการตรวจจับป้ายทะเบียน", font=(self.f_family, 24, "bold"), bg=self.kmitl_orange, fg="#FFFFFF").place(relx=0.5, rely=0.5, anchor="center")
         
         hist_content = tk.Frame(self.history_container, bg="#F0F2F5")
-        hist_content.pack(fill="both", expand=True, padx=40, pady=40)
+        hist_content.pack(fill="both", expand=True, padx=20, pady=20)
         
-        list_frame = tk.Frame(hist_content, bg="#FFFFFF", width=350, highlightthickness=1, highlightbackground="#DDDDDD")
-        list_frame.pack(side="left", fill="y", padx=(0, 20))
+        list_frame = tk.Frame(hist_content, bg="#FFFFFF", width=300, highlightthickness=1, highlightbackground="#DDDDDD")
+        list_frame.pack(side="left", fill="y", padx=(0, 15))
         list_frame.pack_propagate(False)
         
-        tk.Label(list_frame, text="เวลาที่ตรวจพบ", font=(self.f_family, 16, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=15)
+        tk.Label(list_frame, text="เวลาที่ตรวจพบ", font=(self.f_family, 14, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=15)
         
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
         
-        self.log_listbox = tk.Listbox(list_frame, font=(self.f_family, 14), yscrollcommand=scrollbar.set, 
+        self.log_listbox = tk.Listbox(list_frame, font=(self.f_family, 12), yscrollcommand=scrollbar.set, 
                                       selectbackground=self.kmitl_orange, selectforeground="white", relief="flat", borderwidth=0)
-        self.log_listbox.pack(side="left", fill="both", expand=True, padx=20, pady=(0, 20))
+        self.log_listbox.pack(side="left", fill="both", expand=True, padx=15, pady=(0, 15))
         scrollbar.config(command=self.log_listbox.yview)
 
         img_frame = tk.Frame(hist_content, bg="#FFFFFF", highlightthickness=1, highlightbackground="#DDDDDD")
         img_frame.pack(side="right", fill="both", expand=True)
         
         tk.Label(img_frame, text="รูปป้ายทะเบียน", font=(self.f_family, 16, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=15)
-        self.hist_img_label = tk.Label(img_frame, bg="#E9ECEF", text="คลิกที่เวลาด้านซ้าย\nเพื่อดูภาพป้ายทะเบียน", font=(self.f_family, 16), fg="#888888")
-        self.hist_img_label.pack(expand=True, fill="both", padx=30, pady=(0, 30))
+        self.hist_img_label = tk.Label(img_frame, bg="#E9ECEF", text="คลิกที่เวลารายการด้านซ้าย\nเพื่อดูภาพป้ายทะเบียน", font=(self.f_family, 14), fg="#888888")
+        self.hist_img_label.pack(expand=True, fill="both", padx=20, pady=(0, 20))
 
         for record in reversed(self.history_data):
             self.log_listbox.insert("end", record['time'])
@@ -240,7 +316,7 @@ class ALPRSystem:
             record = self.history_data[index]
             
             img = record['image']
-            plate_img_resized = cv2.resize(img, (600, 250), interpolation=cv2.INTER_LINEAR)
+            plate_img_resized = cv2.resize(img, (450, 180), interpolation=cv2.INTER_LINEAR)
             img_pil = Image.fromarray(cv2.cvtColor(plate_img_resized, cv2.COLOR_BGR2RGB))
             imgtk = ImageTk.PhotoImage(image=img_pil)
 
@@ -329,8 +405,8 @@ class ALPRSystem:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
             if self.full_screen_video:
-                target_w = self.screen_width - self.right_panel_width - 40 
-                target_h = self.screen_height - self.header_height - 40
+                target_w = self.screen_width - self.right_panel_width - 30 
+                target_h = self.screen_height - self.header_height - 30
                 if target_w > 0 and target_h > 0:
                     display_frame = cv2.resize(display_frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
@@ -345,14 +421,15 @@ class ALPRSystem:
             self.root.after(60, self.update_gui_loop)
 
     def update_detection_ui(self, plate_img, status_text):
-        plate_img_resized = cv2.resize(plate_img, (400, 180), interpolation=cv2.INTER_LINEAR)
+        # ปรับขนาดรูปเมื่อมีภาพเข้ามา ให้ตรงกับขนาดจองพื้นที่เป๊ะๆ (300x120)
+        plate_img_resized = cv2.resize(plate_img, (300, 120), interpolation=cv2.INTER_LINEAR)
         img = Image.fromarray(cv2.cvtColor(plate_img_resized, cv2.COLOR_BGR2RGB))
         imgtk = ImageTk.PhotoImage(image=img)
         
         self.crop_display.configure(image=imgtk)
         self.crop_display.image = imgtk
         
-        if "สำเร็จ" in status_text or "เสร็จสิ้น" in status_text:
+        if "สำเร็จ" in status_text or "เสร็จสิ้น" in status_text or "ล่าสุด" in status_text:
             self.status_label.config(text=status_text, fg="#28A745") 
         else:
             self.status_label.config(text=status_text, fg="#007BFF") 
