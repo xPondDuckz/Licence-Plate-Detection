@@ -26,8 +26,9 @@ class ALPRSystem:
         
         self.yolo_path = r"G:\Project\Licence-Plate-Detection\carplate-edit\weights\best.pt"
         self.logo_path = r"G:\Project\Licence-Plate-Detection\logo-kmitl.png"
+        self.logo2_path = r"G:\Project\Licence-Plate-Detection\logo-computer.jpg"
         self.save_dir = r"G:\Project\Licence-Plate-Detection\plate-save"
-        self.video_path = r"G:\Project\Video\2.mp4" 
+        self.video_path = r"G:\Project\Video\7.mp4" 
         
         self.f_family = "sans-serif" 
         
@@ -40,11 +41,10 @@ class ALPRSystem:
         self.latest_boxes = []     
         
         self.active_plate = None   
-        # ขยายเวลาที่ยอมให้ AI มองไม่เห็นป้ายจาก 1.5 วิ เป็น 2.5 วิ (กัน AI ภาพกระพริบ)
         self.plate_timeout = 2.5   
         
-        # ตัวแปรใหม่: ระบบ Cooldown ป้องกันการเซฟป้ายเดิมซ้ำ
         self.global_cooldown = 0.0 
+        self.plate_hit_count = 0  # เพิ่มตัวแปรนับจำนวนเฟรมที่เจอป้าย
         
         self.history_data = []
         
@@ -112,7 +112,6 @@ class ALPRSystem:
         self.cap = cv2.VideoCapture(self.video_path)
 
     def setup_ui(self):
-        # ขยายความสูง Header ให้ใหญ่ขึ้นรับกับโลโก้
         self.header_height = 150 
         self.right_panel_width = 450
         
@@ -120,18 +119,31 @@ class ALPRSystem:
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
         
+        # 1. โหลดโลโก้ฝั่งซ้าย (KMITL) แบบไม่มีกรอบ
         try:
             if os.path.exists(self.logo_path):
                 logo_img = Image.open(self.logo_path)
-                # ขยายโลโก้จาก 90x90 เป็น 120x120
                 logo_img = logo_img.resize((143, 143), Image.LANCZOS)
                 self.logo_tk = ImageTk.PhotoImage(logo_img)
                 logo_label = tk.Label(header, image=self.logo_tk, bg=self.kmitl_orange)
                 logo_label.pack(side="left", padx=40, pady=15)
             else:
-                tk.Label(header, text="[ไม่มีโลโก้]", font=(self.f_family, 16), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=40, pady=40)
+                tk.Label(header, text="[ไม่มีโลโก้ ซ้าย]", font=(self.f_family, 16), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=40, pady=40)
         except Exception as e:
             tk.Label(header, text="[Logo Error]", font=(self.f_family, 16), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="left", padx=40, pady=40)
+
+        # 2. โหลดโลโก้ฝั่งขวา (Computer) แบบไม่มีกรอบ
+        try:
+            if os.path.exists(self.logo2_path):
+                logo2_img = Image.open(self.logo2_path)
+                logo2_img = logo2_img.resize((135, 135), Image.LANCZOS)
+                self.logo2_tk = ImageTk.PhotoImage(logo2_img)
+                logo2_label = tk.Label(header, image=self.logo2_tk, bg=self.kmitl_orange)
+                logo2_label.pack(side="right", padx=40, pady=15)
+            else:
+                tk.Label(header, text="[ไม่มีโลโก้ ขวา]", font=(self.f_family, 16), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="right", padx=40, pady=40)
+        except Exception as e:
+            tk.Label(header, text="[Logo2 Error]", font=(self.f_family, 16), bg=self.kmitl_orange, fg="#FFFFFF").pack(side="right", padx=40, pady=40)
         
         tk.Label(header, text="ตรวจจับป้ายทะเบียน KMITL PCC", 
                  font=(self.f_family, 46, "bold"), bg=self.kmitl_orange, fg="#FFFFFF").place(relx=0.5, rely=0.5, anchor="center")
@@ -259,16 +271,16 @@ class ALPRSystem:
         hist_content = tk.Frame(self.history_container, bg="#F0F2F5")
         hist_content.pack(fill="both", expand=True, padx=30, pady=30)
         
-        list_frame = tk.Frame(hist_content, bg="#FFFFFF", width=350, highlightthickness=1, highlightbackground="#DDDDDD")
+        list_frame = tk.Frame(hist_content, bg="#FFFFFF", width=420, highlightthickness=2, highlightbackground=self.kmitl_orange)
         list_frame.pack(side="left", fill="y", padx=(0, 20))
         list_frame.pack_propagate(False)
         
-        tk.Label(list_frame, text="เวลาที่ตรวจพบ", font=(self.f_family, 18, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=20)
+        tk.Label(list_frame, text="รายการเวลาที่ตรวจพบ", font=(self.f_family, 20, "bold"), bg="#FFFFFF", fg=self.kmitl_orange).pack(pady=20)
         
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
         
-        self.log_listbox = tk.Listbox(list_frame, font=(self.f_family, 14), yscrollcommand=scrollbar.set, 
+        self.log_listbox = tk.Listbox(list_frame, font=(self.f_family, 16), yscrollcommand=scrollbar.set, 
                                       selectbackground=self.kmitl_orange, selectforeground="white", relief="flat", borderwidth=0)
         self.log_listbox.pack(side="left", fill="both", expand=True, padx=20, pady=(0, 20))
         scrollbar.config(command=self.log_listbox.yview)
@@ -276,9 +288,13 @@ class ALPRSystem:
         img_frame = tk.Frame(hist_content, bg="#FFFFFF", highlightthickness=1, highlightbackground="#DDDDDD")
         img_frame.pack(side="right", fill="both", expand=True)
         
-        tk.Label(img_frame, text="รูปป้ายทะเบียน", font=(self.f_family, 22, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=20)
-        self.hist_img_label = tk.Label(img_frame, bg="#E9ECEF", text="คลิกที่เวลารายการด้านซ้าย\nเพื่อดูภาพป้ายทะเบียน", font=(self.f_family, 18), fg="#888888")
-        self.hist_img_label.pack(expand=True, fill="both", padx=30, pady=(0, 30))
+        tk.Label(img_frame, text="ภาพป้ายทะเบียนที่บันทึกไว้", font=(self.f_family, 24, "bold"), bg="#FFFFFF", fg="#333333").pack(pady=20)
+        
+        img_container = tk.Frame(img_frame, bg="#2B2B2B", bd=5, relief="sunken")
+        img_container.pack(expand=True, fill="both", padx=40, pady=(0, 40))
+        
+        self.hist_img_label = tk.Label(img_container, bg="#2B2B2B", text="< คลิกเลือกเวลาจากรายการด้านซ้าย\nเพื่อดูภาพขนาดใหญ่", font=(self.f_family, 20), fg="#AAAAAA")
+        self.hist_img_label.pack(expand=True, fill="both")
 
         for record in reversed(self.history_data):
             self.log_listbox.insert("end", record['time'])
@@ -296,7 +312,7 @@ class ALPRSystem:
             record = self.history_data[index]
             
             img = record['image']
-            plate_img_resized = cv2.resize(img, (600, 240), interpolation=cv2.INTER_LINEAR)
+            plate_img_resized = cv2.resize(img, (900, 360), interpolation=cv2.INTER_LINEAR)
             img_pil = Image.fromarray(cv2.cvtColor(plate_img_resized, cv2.COLOR_BGR2RGB))
             imgtk = ImageTk.PhotoImage(image=img_pil)
 
@@ -313,6 +329,7 @@ class ALPRSystem:
             self.latest_frame = frame
             time.sleep(0.01)
 
+    # ================= AI Thread (เพิ่มระบบหน่วงเฟรม) =================
     def ai_thread(self):
         while self.running:
             if self.latest_frame is None:
@@ -320,11 +337,11 @@ class ALPRSystem:
                 continue
 
             ai_frame = self.latest_frame.copy()
-            results = self.model(ai_frame, conf=0.45, imgsz=320, verbose=False)
+            results = self.model(ai_frame, conf=0.55, imgsz=320, verbose=False)
             
             current_time = time.time()
-            plate_detected_this_frame = False
             temp_boxes = []
+            plate_detected_this_frame = False
 
             for r in results:
                 for box in r.boxes:
@@ -332,7 +349,6 @@ class ALPRSystem:
                     conf = float(box.conf[0])
                     temp_boxes.append((x1, y1, x2, y2, conf))
 
-                    # 1. ถ้าระบบติด Cooldown อยู่ (เพิ่งเซฟไป) เราจะวาดกรอบเขียวเฉยๆ แต่ข้ามการเช็คเซฟซ้ำ
                     if current_time < self.global_cooldown:
                         continue
 
@@ -343,31 +359,19 @@ class ALPRSystem:
                     plate_crop = ai_frame[y1_pad:y2_pad, x1_pad:x2_pad]
 
                     if plate_crop.size > 0:
-                        sharpness = self.measure_clarity(plate_crop)
-                        area = (x2_pad - x1_pad) * (y2_pad - y1_pad)
-                        clarity_score = sharpness * area 
-
-                        if self.active_plate is None:
-                            self.active_plate = {'crop': plate_crop, 'score': clarity_score, 'last_seen': current_time, 'saved': False}
-                            self.root.after(0, self.update_detection_ui, plate_crop, "พบป้ายทะเบียน กำลังประมวลผล...")
-                        else:
-                            self.active_plate['last_seen'] = current_time 
-                            if clarity_score > self.active_plate['score']:
-                                self.active_plate['crop'] = plate_crop
-                                self.active_plate['score'] = clarity_score
-                                self.root.after(0, self.update_detection_ui, plate_crop, "อัปเดตภาพที่ชัดเจนขึ้น...")
-
-            # 2. ถ้ารถพ้นจอไปแล้ว หรือหมดเวลา Timeout ระบบถึงจะทำการเซฟภาพที่ดีที่สุด
-            if not plate_detected_this_frame and self.active_plate is not None:
-                if current_time - self.active_plate['last_seen'] > self.plate_timeout:
-                    if not self.active_plate['saved']:
-                        self.process_best_plate(self.active_plate['crop'])
-                        self.active_plate['saved'] = True
+                        self.plate_hit_count += 1
                         
-                        # 3. เซฟเสร็จ สั่งล็อค Cooldown 3.5 วินาทีเพื่อรอให้รถคันเดิมขับผ่านให้พ้นเฟรม
-                        self.global_cooldown = current_time + 3.5
-                    
-                    self.active_plate = None 
+                        # รอให้เจอป้ายติดต่อกันครบ 4 เฟรม (เพื่อให้รถเข้ามาลึกขึ้น)
+                        if self.plate_hit_count >= 4:
+                            self.process_best_plate(plate_crop)
+                            
+                            self.global_cooldown = current_time + 1.0
+                            self.plate_hit_count = 0  # รีเซ็ตตัวนับ
+                            break 
+
+            # ถ้าในเฟรมนี้มองไม่เห็นป้าย ให้รีเซ็ตการนับใหม่
+            if not plate_detected_this_frame:
+                self.plate_hit_count = 0
 
             self.latest_boxes = temp_boxes
             time.sleep(0.01)
